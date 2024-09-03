@@ -8,12 +8,14 @@ from .common import InfoExtractor
 from ..utils import (
     ExtractorError,
     clean_html,
+    filter_dict,
     format_field,
     int_or_none,
     remove_start,
     smuggle_url,
     traverse_obj,
     unsmuggle_url,
+    update_url_query,
 )
 
 
@@ -184,6 +186,35 @@ class KalturaIE(InfoExtractor):
             ],
         },
     ]
+    _WEBPAGE_TESTS = [{
+        'url': 'https://mediaspace.carleton.ca/media/4705_0_2021/1_5hgwu9bi',
+        'info_dict': {
+        },
+    }, {
+        'url': 'https://emm.edcity.hk/media/1_86k6xbyh',
+        'info_dict': {
+        },
+    }, {
+        'url': 'https://emm.edcity.hk/media/Gifted+Education+Policy+in+Hong+Kong+and+The+Hong+Kong+Academy+for+Gifted+Education+%28With+English+Subtitles%29/1_v9bi7emq',
+        'info_dict': {
+        },
+    }, {
+        'url': 'https://su-jsm.atlassian.net/wiki/spaces/Answers/pages/164430287/Embedding+Videos+in+Answers',
+        'info_dict': {
+        },
+    }, {
+        'url': 'https://help.sap.com/docs/SAP_S4HANA_CLOUD/ff01156df84f470cb46483b8a0ba0b79/bfff86f1e64e406f87e8135ea431f4f7.html',
+        'info_dict': {
+        },
+    }, {
+        'url': 'https://drexel.edu/cms/media-library/embed-iframe/drexel-streams/embed/',
+        'info_dict': {
+        },
+    }, {
+        'url': 'https://www.uwosh.edu/testing/student-opinion-survey/sos-introduction-video/',
+        'info_dict': {
+        },
+    }]
 
     @classmethod
     def _extract_embed_urls(cls, url, webpage):
@@ -231,10 +262,13 @@ class KalturaIE(InfoExtractor):
             embed_url = 'kaltura:{partner_id}:{id}'.format(**embed_info)
             escaped_pid = re.escape(embed_info['partner_id'])
             service_mobj = re.search(
-                rf'<script[^>]+src=(["\'])(?P<id>(?:https?:)?//(?:(?!\1).)+)/p/{escaped_pid}/sp/{escaped_pid}00/embedIframeJs',
+                rf'<script[^>]+src=(["\'])(?P<id>(?:https?:)?//(?:(?!\1).)+)/p/{escaped_pid}/sp/{escaped_pid}00/embedIframeJs(?:/uiconf_id/(?P<uiconf_id>[^/]+))?',
                 webpage)
             if service_mobj:
-                embed_url = smuggle_url(embed_url, {'service_url': service_mobj.group('id')})
+                embed_url = smuggle_url(embed_url, filter_dict({'service_url': service_mobj.group('id'), 'uiconf_id': service_mobj.group('uiconf_id')}))
+            flashvars_mobj = re.search(r'flashvars\s*=\s*(?P<flashvars>.+);\n', webpage)
+            if flashvars_mobj:
+                embed_url = smuggle_url(embed_url, {'flashvars': flashvars_mobj.group('flashvars')})
             urls.append(embed_url)
         return urls
 
@@ -387,7 +421,20 @@ class KalturaIE(InfoExtractor):
         ks, captions = None, None
         if not player_type:
             player_type = 'kwidget' if 'html5lib/v2' in url else 'html5'
-        if partner_id and entry_id:
+        if flashvars := self._parse_json(smuggled_data.get('flashvars', '{}'), entry_id):
+            params = filter_dict({'wid': f'_{partner_id}', 'entry_id': entry_id, 'uiconf_id': smuggled_data.get('uiconf_id')})
+            for k, v in flashvars.items():
+                params[f'flashvars[{k}]'] = json.dumps(v) if not isinstance(v, str) else v
+            webpage = self._download_webpage(update_url_query(
+                'https://cdnapisec.kaltura.com/html5/html5lib/v2.101/mwEmbedFrame.php', params), entry_id)
+            entry_data = self._search_json(
+                self.IFRAME_PACKAGE_DATA_REGEX, webpage, 'kalturaIframePackageData', entry_id)['entryResult']
+            info, flavor_assets = entry_data['meta'], entry_data['contextData']['flavorAssets']
+            entry_id = info['id']
+            with contextlib.suppress(ExtractorError):
+                captions = self.extract_subtitles(entry_id, partner_id, player_type)
+            ks = flashvars.get('ks', [None])
+        elif partner_id and entry_id:
             _, info, flavor_assets, captions = self._get_video_info(entry_id, partner_id, smuggled_data.get('service_url'), player_type=player_type)
         else:
             path, query = mobj.group('path', 'query')
